@@ -6,13 +6,14 @@ Fast inference engine for [SNAC](https://github.com/hubertsiuzdak/snac), a hiera
 
 NVIDIA H100 PCIe | `hubertsiuzdak/snac_24khz` | 100s audio @ 24kHz
 
-| Method | Layer | Latency | Speedup | Optimizations |
-|--------|-------|:-------:|:-------:|:--------------|
-| FP16 + compile | decode (1s) | **0.93 ms** | **3.72x** | `torch.compile`, FP16 autocast |
-| FP16 + compile | decode (6s) | **2.91 ms** | **1.96x** | `torch.compile`, FP16 autocast |
-| FP16 + compile | decode (100s) | **42.72 ms** | **1.67x** | `torch.compile`, FP16 autocast |
-| Triton kernel | Snake Encoder (1024ch) | **21 us** | **6.16x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
-| Triton kernel | Snake Decoder (1536ch) | **41 us** | **5.64x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
+| Method | Layer | PyTorch | Optimized | Speedup | Optimizations |
+|--------|-------|:-------:|:---------:|:-------:|:--------------|
+| FP16 + compile | decode (1s) | 3.45 ms | **0.93 ms** | **3.72x** | `torch.compile`, FP16 autocast |
+| FP16 + compile | decode (6s) | 5.70 ms | **2.91 ms** | **1.96x** | `torch.compile`, FP16 autocast |
+| FP16 + compile | decode (100s) | 71.40 ms | **42.72 ms** | **1.67x** | `torch.compile`, FP16 autocast |
+| Triton kernel | Snake Encoder (1024ch) | 132 us | **22 us** | **6.02x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
+| Triton kernel | Snake Decoder (1536ch) | 235 us | **43 us** | **5.53x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
+| Triton kernel | Snake All Layers (100s) | 15651 us | **2925 us** | **5.35x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
 
 ## Quick Start
 
