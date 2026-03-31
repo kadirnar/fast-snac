@@ -13,7 +13,6 @@ NVIDIA H100 PCIe | `hubertsiuzdak/snac_24khz` | 100s audio @ 24kHz
 | FP16 + compile | decode (100s) | **42.72 ms** | **1.67x** | `torch.compile`, FP16 autocast |
 | Triton kernel | Snake Encoder (1024ch) | **21 us** | **6.16x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
 | Triton kernel | Snake Decoder (1536ch) | **41 us** | **5.64x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
-| Triton kernel | Snake Decoder (96ch) | **1045 us** | **5.44x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
 
 ## Quick Start
 
