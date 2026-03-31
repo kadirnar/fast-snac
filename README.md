@@ -1,24 +1,44 @@
 # Fast-SNAC
 
-Fast inference engine for [SNAC](https://github.com/hubertsiuzdak/snac), a hierarchical neural audio codec that compresses audio using multi-scale residual vector quantization. This library accelerates SNAC decode up to **3.7x** on NVIDIA GPUs through graph-level optimizations — with no quality loss at FP32 and no changes to model weights.
+Fast inference engine for [SNAC](https://github.com/hubertsiuzdak/snac), a hierarchical neural audio codec. Accelerates SNAC decode up to **2.70x** end-to-end on NVIDIA GPUs through Triton kernels + torch.compile — with no changes to model weights.
 
 ## Benchmark
 
 NVIDIA H100 PCIe | `hubertsiuzdak/snac_24khz` | 100s audio @ 24kHz
 
-| Layer | PyTorch | Triton | Speedup | Optimizations |
-|-------|:-------:|:------:|:-------:|:--------------|
-| Encoder Block1 (64ch) | 1291 us | **238 us** | **5.44x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
-| Encoder Block2 (128ch) | 874 us | **169 us** | **5.17x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
-| Encoder Block3 (256ch) | 275 us | **50 us** | **5.51x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
-| Encoder Block4 (512ch) | 55 us | **21 us** | **2.67x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
-| Encoder Output (1024ch) | 132 us | **22 us** | **6.10x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
-| Decoder Input (1536ch) | 235 us | **42 us** | **5.54x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
-| Decoder Block1 (768ch) | 756 us | **144 us** | **5.27x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
-| Decoder Block2 (384ch) | 2548 us | **484 us** | **5.27x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
-| Decoder Block3 (192ch) | 3800 us | **701 us** | **5.42x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
-| Decoder Block4 (96ch) | 5679 us | **1045 us** | **5.44x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
-| **Total** | **15646 us** | **2914 us** | **5.37x** | |
+### Full Precision (FP32) — Zero Quality Loss
+
+| Method | Latency | Speedup |
+|--------|:-------:|:-------:|
+| PyTorch FP32 | 70.91 ms | 1.0x |
+| + torch.compile | **54.68 ms** | **1.30x** |
+
+### Half Precision (FP16)
+
+| Method | Latency | Speedup |
+|--------|:-------:|:-------:|
+| PyTorch FP16 | 58.67 ms | 1.21x |
+| + Triton Snake (`fast_sinf`, fused depthwise) | 33.30 ms | 2.13x |
+| + torch.compile (elementwise fusion) | 26.90 ms | 2.64x |
+| **+ CUDA graph** | **26.29 ms** | **2.70x** |
+
+### Snake Activation Kernel (isolated)
+
+| Method | Latency | Speedup |
+|--------|:-------:|:-------:|
+| PyTorch Snake (all layers, 100s) | 15,646 us | 1.0x |
+| **Triton Snake** | **2,914 us** | **5.37x** |
+
+## Optimizations
+
+- **Triton Snake kernel** — `fast_sinf` + `fast_dividef` CUDA intrinsics, L2 eviction hints
+- **Fused Snake + Depthwise Conv1d** — single Triton kernel, eliminates intermediate tensor
+- **Standalone Depthwise Conv1d** — Triton kernel with unrolled loop (`K` constexpr)
+- **torch.compile** — Inductor epilogue fusion for elementwise ops (residual add, sigmoid, noise)
+- **torch.library.custom_op** — graph-break-free Triton integration with torch.compile
+- **Weight norm removal** — fuses `weight_g * weight_v / ||weight_v||` at load time
+- **NoiseBlock caching** — static noise tensor, enables CUDA graph capture
+- **CUDA graph** — zero CPU overhead kernel replay
 
 ## Quick Start
 
@@ -28,29 +48,28 @@ pip install git+https://github.com/kadirnar/fast-snac.git
 
 ```python
 from snac import SNAC
-from snac.optimize import optimize_snac_native
+from snac.optimize import optimize_snac_triton
 import torch
 
 model = SNAC.from_pretrained("hubertsiuzdak/snac_24khz").cuda().eval()
 audio = torch.randn(1, 1, 24000, device="cuda")
 codes = model.encode(audio)
 
-# FP32 — zero quality loss
+# FP16 + Triton + compile — fastest (2.70x)
+decode_fn = optimize_snac_triton(model, codes, dtype="fp16", use_compile=True)
+audio_hat = decode_fn(codes)
+
+# FP32 + compile — zero quality loss (1.30x)
+from snac.optimize import optimize_snac_native
+model = SNAC.from_pretrained("hubertsiuzdak/snac_24khz").cuda().eval()
 decode_fn = optimize_snac_native(model, codes, dtype="fp32")
 audio_hat = decode_fn(codes)
-
-# FP16 — fastest
-decode_fn = optimize_snac_native(model, codes, dtype="fp16")
-audio_hat = decode_fn(codes)
-
-# Triton Snake kernel — drop-in replacement
-from snac.kernels.triton_snake import snake_triton
-y = snake_triton(x, alpha)
 ```
 
 ## Requirements
 
 - PyTorch 2.6+
+- Triton 3.0+
 - NVIDIA GPU (Hopper/Ampere)
 
 ## License

@@ -52,6 +52,7 @@ def _snake_kernel(
     tl.store(Y_ptr + idx, y.to(X_ptr.dtype.element_ty), mask=mask)
 
 
+@torch.library.custom_op("snac::snake_triton", mutates_args=())
 def snake_triton(x: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
     """Snake activation using Triton kernel.
 
@@ -89,3 +90,8 @@ def snake_triton(x: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
     if squeeze:
         output = output.unsqueeze(2)
     return output
+
+
+@snake_triton.register_fake
+def _snake_triton_fake(x, alpha):
+    return torch.empty_like(x)

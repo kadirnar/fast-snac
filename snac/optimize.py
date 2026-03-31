@@ -45,6 +45,93 @@ def _strip_weight_norm(model):
             pass
 
 
+def _inject_triton_kernels(model):
+    """Replace Snake1d with Triton fast_sinf kernel.
+    Replace Snake1d + depthwise Conv1d sequences with fused Triton kernel.
+    Replace standalone depthwise Conv1d with Triton kernel.
+    Optimize NoiseBlock with cached noise.
+    """
+    from .kernels.triton_snake import snake_triton
+    from .kernels.triton_depthwise_conv import (
+        snake_depthwise_conv1d_triton, depthwise_conv1d_triton,
+    )
+
+    def _replace(parent):
+        children = list(parent.named_children())
+        skip_next = set()
+        for i, (name, child) in enumerate(children):
+            if name in skip_next:
+                continue
+            ctype = type(child).__name__
+
+            # Fuse Snake1d + depthwise Conv1d when they're sequential
+            if ctype == 'Snake1d':
+                fused = False
+                if isinstance(parent, nn.Sequential) and i + 1 < len(children):
+                    next_name, next_child = children[i + 1]
+                    if isinstance(next_child, nn.Conv1d) and next_child.groups == next_child.in_channels and next_child.groups > 1:
+                        alpha_param = child.alpha
+                        conv = next_child
+                        class FusedSnakeDepthwiseConv(nn.Module):
+                            def __init__(self, alpha, conv_mod):
+                                super().__init__()
+                                self.alpha = alpha
+                                self.weight = conv_mod.weight
+                                self.bias = conv_mod.bias
+                                self.stride = conv_mod.stride[0]
+                                self.padding = conv_mod.padding[0]
+                                self.dilation = conv_mod.dilation[0]
+                            def forward(self, x):
+                                return snake_depthwise_conv1d_triton(
+                                    x, self.alpha, self.weight, self.bias,
+                                    stride=self.stride, padding=self.padding,
+                                    dilation=self.dilation,
+                                )
+                        fused_mod = FusedSnakeDepthwiseConv(alpha_param, conv)
+                        setattr(parent, name, fused_mod)
+                        setattr(parent, next_name, nn.Identity())
+                        skip_next.add(next_name)
+                        fused = True
+
+                if not fused:
+                    alpha_param = child.alpha
+                    def _make_fwd(a):
+                        def fwd(x):
+                            return snake_triton(x, a)
+                        return fwd
+                    child.forward = _make_fwd(alpha_param)
+
+            # Replace standalone depthwise Conv1d with Triton kernel
+            elif isinstance(child, nn.Conv1d) and child.groups == child.in_channels and child.groups > 1:
+                conv = child
+                def _make_dw_fwd(c):
+                    w = c.weight
+                    b = c.bias
+                    s, p, d = c.stride[0], c.padding[0], c.dilation[0]
+                    def fwd(x):
+                        return depthwise_conv1d_triton(x, w, b, stride=s, padding=p, dilation=d)
+                    return fwd
+                child.forward = _make_dw_fwd(conv)
+
+            # Optimize NoiseBlock: cache noise tensor
+            elif ctype == 'NoiseBlock':
+                def _make_noise_fwd(mod):
+                    _cached = [None]
+                    def fwd(x):
+                        B, C, T = x.shape
+                        if _cached[0] is None or _cached[0].shape[-1] != T:
+                            _cached[0] = torch.randn(B, 1, T, device=x.device, dtype=x.dtype)
+                        h = mod.linear(x)
+                        return x + _cached[0] * h
+                    return fwd
+                child.forward = _make_noise_fwd(child)
+
+            else:
+                _replace(child)
+
+    _replace(model)
+
+
 def _convert_conv1d_to_conv2d(model):
     """Replace Conv1d/ConvTranspose1d with Conv2d/ConvTranspose2d in channels_last.
     Replace Snake1d with polynomial sin² approximation.
@@ -176,6 +263,66 @@ def _build_decode_fn(model):
 # ---------------------------------------------------------------------------
 # Main entry points
 # ---------------------------------------------------------------------------
+
+def optimize_snac_triton(model, sample_codes, dtype="fp32", use_compile=False):
+    """Optimize SNAC decode with Triton kernels.
+
+    Replaces Snake1d with fast_sinf Triton kernel.
+    Fuses Snake1d + depthwise Conv1d into single Triton kernel.
+    Replaces standalone depthwise Conv1d with Triton kernel.
+    Caches NoiseBlock random tensors.
+    Strips weight norms. Optionally applies torch.compile on top.
+    """
+    if isinstance(dtype, str):
+        torch_dtype = _DTYPE_MAP.get(dtype.lower())
+        if torch_dtype is None:
+            raise ValueError(f"Unknown dtype '{dtype}'. Use: fp32, fp16, bf16")
+    else:
+        torch_dtype = dtype
+
+    torch.backends.cudnn.benchmark = True
+    torch.set_float32_matmul_precision('high')
+
+    _strip_weight_norm(model)
+    _inject_triton_kernels(model)
+    model = model.to(torch_dtype).eval()
+
+    if not use_compile:
+        # Warmup Triton kernels
+        typed_codes = [c.clone() for c in sample_codes]
+        with torch.no_grad():
+            for _ in range(3):
+                model.decode(typed_codes)
+        torch.cuda.synchronize()
+
+        def optimized_decode(codes):
+            with torch.no_grad():
+                return model.decode(codes)
+        return optimized_decode
+
+    # Triton + torch.compile (custom_ops prevent graph breaks)
+    import torch._dynamo.config as dynamo_config
+    import torch._inductor.config as inductor_config
+
+    dynamo_config.cache_size_limit = 64
+    inductor_config.freezing = True
+    inductor_config.epilogue_fusion = True
+    inductor_config.aggressive_fusion = True
+    inductor_config.coordinate_descent_tuning = True
+
+    @torch.compile(mode='max-autotune-no-cudagraphs', fullgraph=False)
+    @torch.no_grad()
+    def compiled_decode(codes):
+        z_q = model.quantizer.from_codes(codes)
+        return model.decoder(z_q)
+
+    typed_codes = [c.clone() for c in sample_codes]
+    for _ in range(3):
+        compiled_decode(typed_codes)
+    torch.cuda.synchronize()
+
+    return compiled_decode
+
 
 def optimize_snac_native(model, sample_codes, dtype="fp32", use_cuda_graph=False):
     """Optimize SNAC decode — lightweight path (no Conv2d conversion).
