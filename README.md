@@ -36,6 +36,28 @@ decode_fn = optimize_snac_native(model, codes, dtype="fp16")
 audio_hat = decode_fn(codes)
 ```
 
+## Triton Snake Kernel
+
+Custom Triton kernel for the Snake activation (`x + (1/α)·sin²(α·x)`) used throughout SNAC's encoder and decoder.
+
+| Duration | Layer | PyTorch | Triton | Speedup |
+|----------|-------|:-------:|:------:|:-------:|
+| 100s | Encoder (1024ch) | 131 us | **21 us** | **6.16x** |
+| 100s | Decoder (1536ch) | 233 us | **41 us** | **5.64x** |
+| 100s | Decoder (96ch) | 5680 us | **1045 us** | **5.44x** |
+
+Optimizations:
+- **`fast_sinf`** — CUDA fast-math sin intrinsic (~2x faster than IEEE `tl.sin`)
+- **`fast_dividef`** — CUDA fast-math reciprocal for 1/α computation
+- **In-kernel `inv_alpha`** — computed inside the kernel, eliminating one memory load
+- **L2 cache eviction hints** — `evict_first` for streaming input, `evict_last` for reused α
+
+```python
+from snac.kernels.triton_snake import snake_triton
+
+y = snake_triton(x, alpha)  # drop-in replacement for Snake1d
+```
+
 ## Requirements
 
 - PyTorch 2.6+
