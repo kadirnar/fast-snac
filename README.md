@@ -6,14 +6,19 @@ Fast inference engine for [SNAC](https://github.com/hubertsiuzdak/snac), a hiera
 
 NVIDIA H100 PCIe | `hubertsiuzdak/snac_24khz` | 100s audio @ 24kHz
 
-| Method | Layer | PyTorch | Optimized | Speedup | Optimizations |
-|--------|-------|:-------:|:---------:|:-------:|:--------------|
-| FP16 + compile | decode (1s) | 3.45 ms | **0.93 ms** | **3.72x** | `torch.compile`, FP16 autocast |
-| FP16 + compile | decode (6s) | 5.70 ms | **2.91 ms** | **1.96x** | `torch.compile`, FP16 autocast |
-| FP16 + compile | decode (100s) | 71.40 ms | **42.72 ms** | **1.67x** | `torch.compile`, FP16 autocast |
-| Triton kernel | Snake Encoder (1024ch) | 132 us | **22 us** | **6.02x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
-| Triton kernel | Snake Decoder (1536ch) | 235 us | **43 us** | **5.53x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
-| Triton kernel | Snake All Layers (100s) | 15651 us | **2925 us** | **5.35x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
+| Layer | PyTorch | Triton | Speedup | Optimizations |
+|-------|:-------:|:------:|:-------:|:--------------|
+| Encoder Block1 (64ch) | 1291 us | **238 us** | **5.44x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
+| Encoder Block2 (128ch) | 874 us | **169 us** | **5.17x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
+| Encoder Block3 (256ch) | 275 us | **50 us** | **5.51x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
+| Encoder Block4 (512ch) | 55 us | **21 us** | **2.67x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
+| Encoder Output (1024ch) | 132 us | **22 us** | **6.10x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
+| Decoder Input (1536ch) | 235 us | **42 us** | **5.54x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
+| Decoder Block1 (768ch) | 756 us | **144 us** | **5.27x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
+| Decoder Block2 (384ch) | 2548 us | **484 us** | **5.27x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
+| Decoder Block3 (192ch) | 3800 us | **701 us** | **5.42x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
+| Decoder Block4 (96ch) | 5679 us | **1045 us** | **5.44x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
+| **Total** | **15646 us** | **2914 us** | **5.37x** | |
 
 ## Quick Start
 
