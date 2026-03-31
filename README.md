@@ -4,13 +4,16 @@ Fast inference engine for [SNAC](https://github.com/hubertsiuzdak/snac), a hiera
 
 ## Benchmark
 
-NVIDIA H100 PCIe | `hubertsiuzdak/snac_24khz` | decode
+NVIDIA H100 PCIe | `hubertsiuzdak/snac_24khz` | 100s audio @ 24kHz
 
-| Duration | Baseline (FP32) | FP16 + compile | Speedup | Real-time Factor |
-|----------|:---------------:|:--------------:|:-------:|:----------------:|
-| 1s | 3.45 ms | **0.93 ms** | **3.72x** | **25,806x** |
-| 6s | 5.70 ms | **2.91 ms** | **1.96x** | **49,485x** |
-| 100s | 71.40 ms | **42.72 ms** | **1.67x** | **56,180x** |
+| Method | Layer | Latency | Speedup | Optimizations |
+|--------|-------|:-------:|:-------:|:--------------|
+| FP16 + compile | decode (1s) | **0.93 ms** | **3.72x** | `torch.compile`, FP16 autocast |
+| FP16 + compile | decode (6s) | **2.91 ms** | **1.96x** | `torch.compile`, FP16 autocast |
+| FP16 + compile | decode (100s) | **42.72 ms** | **1.67x** | `torch.compile`, FP16 autocast |
+| Triton kernel | Snake Encoder (1024ch) | **21 us** | **6.16x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
+| Triton kernel | Snake Decoder (1536ch) | **41 us** | **5.64x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
+| Triton kernel | Snake Decoder (96ch) | **1045 us** | **5.44x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
 
 ## Quick Start
 
@@ -34,22 +37,10 @@ audio_hat = decode_fn(codes)
 # FP16 — fastest
 decode_fn = optimize_snac_native(model, codes, dtype="fp16")
 audio_hat = decode_fn(codes)
-```
 
-## Triton Snake Kernel
-
-Custom Triton kernel for the Snake activation (`x + (1/α)·sin²(α·x)`) used throughout SNAC's encoder and decoder.
-
-| Duration | Layer | PyTorch | Triton | Speedup | Optimizations |
-|----------|-------|:-------:|:------:|:-------:|:--------------|
-| 100s | Encoder (1024ch) | 131 us | **21 us** | **6.16x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
-| 100s | Decoder (1536ch) | 233 us | **41 us** | **5.64x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
-| 100s | Decoder (96ch) | 5680 us | **1045 us** | **5.44x** | `fast_sinf`, `fast_dividef`, L2 eviction hints |
-
-```python
+# Triton Snake kernel — drop-in replacement
 from snac.kernels.triton_snake import snake_triton
-
-y = snake_triton(x, alpha)  # drop-in replacement for Snake1d
+y = snake_triton(x, alpha)
 ```
 
 ## Requirements
