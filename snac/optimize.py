@@ -37,8 +37,17 @@ _DTYPE_MAP = {
 # ---------------------------------------------------------------------------
 
 def _strip_weight_norm(model):
-    """Remove weight_norm from all modules (fuse weight_g/weight_v)."""
+    """Remove weight_norm from all modules (handles both old and new APIs)."""
+    import torch.nn.utils.parametrize as parametrize
     for _, mod in model.named_modules():
+        # Try new parametrizations API first
+        if hasattr(mod, 'parametrizations') and hasattr(mod.parametrizations, 'weight'):
+            try:
+                parametrize.remove_parametrizations(mod, 'weight')
+                continue
+            except Exception:
+                pass
+        # Fallback to old API
         try:
             remove_weight_norm(mod)
         except (ValueError, AttributeError):
