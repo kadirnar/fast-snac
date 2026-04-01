@@ -1,18 +1,10 @@
 """Triton kernel for Snake activation: x + (1/α)·sin²(α·x)
 
-Single kernel pass — no intermediate memory writes.
-Supports both 3D [B, C, T] and 4D [B, C, 1, T] inputs.
-
 Optimized with:
-  - fast_sinf: CUDA fast-math sin (~2x faster than IEEE tl.sin)
-  - fast_dividef: CUDA fast-math reciprocal
-  - 2D grid (C, cdiv(T, BLOCK_T)): alpha loaded once per channel
-  - Eviction hints: streaming x (evict_first), reused alpha (evict_last)
-
-Benchmark (H100 PCIe, 100s audio @ 24kHz, fp32):
-  Encoder (1024ch, T=5442):  ~22 us — 5.98x vs PyTorch
-  Decoder (1536ch, T=5442):  ~41 us — 5.64x vs PyTorch
-  Decoder (96ch, T=2400000): ~1052 us — 5.40x vs PyTorch
+  - fast_sinf / fast_dividef: CUDA fast-math intrinsics
+  - Batch in grid: single kernel launch for entire batch (no Python loop)
+  - Autotune: BLOCK_T 512-4096, num_warps 4-16
+  - torch.library.custom_op: graph-break-free with torch.compile
 """
 
 import torch
@@ -27,71 +19,59 @@ import triton.language as tl
         triton.Config({"BLOCK_T": 1024}, num_warps=8, num_stages=2),
         triton.Config({"BLOCK_T": 2048}, num_warps=4, num_stages=2),
         triton.Config({"BLOCK_T": 2048}, num_warps=8, num_stages=2),
+        triton.Config({"BLOCK_T": 2048}, num_warps=16, num_stages=2),
         triton.Config({"BLOCK_T": 4096}, num_warps=8, num_stages=2),
+        triton.Config({"BLOCK_T": 4096}, num_warps=16, num_stages=2),
     ],
     key=["T"],
 )
 @triton.jit
 def _snake_kernel(
     X_ptr, A_ptr, Y_ptr,
-    C, T, stride_c, stride_t,
+    C, T,
+    stride_xb, stride_yb,  # batch strides
     BLOCK_T: tl.constexpr,
 ):
-    """Snake activation: y = x + (1/α)·sin²(α·x)
-
-    Each program handles one (channel, tile_t) slice.
-    Grid: (C, cdiv(T, BLOCK_T))
-    Alpha and inv_alpha computed once per channel program.
-    """
+    """Snake: y = x + (1/α)·sin²(α·x). Grid: (C, cdiv(T, BLOCK_T), B)"""
     c = tl.program_id(0)
     t_start = tl.program_id(1) * BLOCK_T
+    b = tl.program_id(2)
 
     alpha = tl.load(A_ptr + c).to(tl.float32)
     inv_alpha = tl.extra.cuda.libdevice.fast_dividef(1.0, alpha)
 
     offs = t_start + tl.arange(0, BLOCK_T)
     mask = offs < T
-    idx = c * stride_c + offs * stride_t
+    idx = b * stride_xb + c * T + offs
 
-    x = tl.load(X_ptr + idx, mask=mask, other=0.0, eviction_policy="evict_first").to(tl.float32)
-
+    x = tl.load(X_ptr + idx, mask=mask, other=0.0).to(tl.float32)
     ax = alpha * x
     sin_ax = tl.extra.cuda.libdevice.fast_sinf(ax)
-    sin2 = sin_ax * sin_ax
-    y = x + inv_alpha * sin2
+    y = x + inv_alpha * sin_ax * sin_ax
 
-    tl.store(Y_ptr + idx, y.to(X_ptr.dtype.element_ty), mask=mask)
+    out_idx = b * stride_yb + c * T + offs
+    tl.store(Y_ptr + out_idx, y.to(X_ptr.dtype.element_ty), mask=mask)
 
 
 @torch.library.custom_op("snac::snake_triton", mutates_args=())
 def snake_triton(x: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
-    """Snake activation using Triton kernel.
-
-    Args:
-        x: Input tensor [B, C, T] or [B, C, 1, T]
-        alpha: Per-channel alpha [1, C, 1] or [1, C, 1, 1]
-
-    Returns:
-        y = x + (1/alpha) * sin²(alpha * x)
-    """
+    """Snake activation using Triton kernel."""
     squeeze = False
     if x.ndim == 4:
         squeeze = True
         x = x.squeeze(2)
 
     B, C, T = x.shape
+    x = x.contiguous()
     alpha_flat = alpha.flatten().float()
-
     output = torch.empty_like(x)
 
-    grid = lambda meta: (C, triton.cdiv(T, meta['BLOCK_T']))
-
-    for b in range(B):
-        _snake_kernel[grid](
-            x[b], alpha_flat, output[b],
-            C, T,
-            stride_c=T, stride_t=1,
-        )
+    grid = lambda meta: (C, triton.cdiv(T, meta['BLOCK_T']), B)
+    _snake_kernel[grid](
+        x, alpha_flat, output,
+        C, T,
+        x.stride(0), output.stride(0),
+    )
 
     if squeeze:
         output = output.unsqueeze(2)
