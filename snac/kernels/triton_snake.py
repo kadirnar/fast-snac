@@ -20,6 +20,17 @@ import triton
 import triton.language as tl
 
 
+@triton.autotune(
+    configs=[
+        triton.Config({"BLOCK_T": 512}, num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_T": 1024}, num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_T": 1024}, num_warps=8, num_stages=2),
+        triton.Config({"BLOCK_T": 2048}, num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_T": 2048}, num_warps=8, num_stages=2),
+        triton.Config({"BLOCK_T": 4096}, num_warps=8, num_stages=2),
+    ],
+    key=["T"],
+)
 @triton.jit
 def _snake_kernel(
     X_ptr, A_ptr, Y_ptr,
@@ -73,18 +84,13 @@ def snake_triton(x: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
 
     output = torch.empty_like(x)
 
-    BLOCK_T = 1024
-    grid = (C, triton.cdiv(T, BLOCK_T))
+    grid = lambda meta: (C, triton.cdiv(T, meta['BLOCK_T']))
 
     for b in range(B):
-        x_b = x[b]  # [C, T]
-        out_b = output[b]
-
         _snake_kernel[grid](
-            x_b, alpha_flat, out_b,
+            x[b], alpha_flat, output[b],
             C, T,
             stride_c=T, stride_t=1,
-            BLOCK_T=BLOCK_T,
         )
 
     if squeeze:

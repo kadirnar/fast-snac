@@ -15,6 +15,15 @@ import triton
 import triton.language as tl
 
 
+@triton.autotune(
+    configs=[
+        triton.Config({"BLOCK_T": 512}, num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_T": 1024}, num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_T": 2048}, num_warps=8, num_stages=2),
+        triton.Config({"BLOCK_T": 4096}, num_warps=8, num_stages=2),
+    ],
+    key=["T_out"],
+)
 @triton.jit
 def _depthwise_conv1d_kernel(
     X_ptr, W_ptr, B_ptr, Y_ptr,
@@ -50,6 +59,17 @@ def _depthwise_conv1d_kernel(
     tl.store(Y_ptr + y_idx, acc.to(X_ptr.dtype.element_ty), mask=mask)
 
 
+@triton.autotune(
+    configs=[
+        triton.Config({"BLOCK_T": 512}, num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_T": 1024}, num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_T": 1024}, num_warps=8, num_stages=2),
+        triton.Config({"BLOCK_T": 2048}, num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_T": 2048}, num_warps=8, num_stages=2),
+        triton.Config({"BLOCK_T": 4096}, num_warps=8, num_stages=2),
+    ],
+    key=["T_out"],
+)
 @triton.jit
 def _snake_depthwise_conv1d_kernel(
     X_ptr, A_ptr,
@@ -61,6 +81,7 @@ def _snake_depthwise_conv1d_kernel(
 ):
     """Fused: Snake activation -> Depthwise Conv1d in one kernel.
     K is constexpr so Triton unrolls the conv loop.
+    Autotuned BLOCK_T and num_warps for best memory throughput.
     Grid: (C, cdiv(T_out, BLOCK_T))
     """
     c = tl.program_id(0)
@@ -78,7 +99,7 @@ def _snake_depthwise_conv1d_kernel(
         in_mask = mask & (t_in >= 0) & (t_in < T_in)
         x_idx = c * T_in + t_in
 
-        x_val = tl.load(X_ptr + x_idx, mask=in_mask, other=0.0, eviction_policy="evict_first").to(tl.float32)
+        x_val = tl.load(X_ptr + x_idx, mask=in_mask, other=0.0).to(tl.float32)
         ax = alpha * x_val
         sin_ax = tl.extra.cuda.libdevice.fast_sinf(ax)
         x_snake = x_val + inv_alpha * sin_ax * sin_ax
@@ -104,14 +125,12 @@ def depthwise_conv1d_triton(x: torch.Tensor, weight: torch.Tensor, bias: torch.T
     w_flat = weight.squeeze(1).contiguous()
     b_flat = bias.contiguous()
 
-    BLOCK_T = 1024
-    grid = (C, triton.cdiv(T_out, BLOCK_T))
+    grid = lambda meta: (C, triton.cdiv(T_out, meta['BLOCK_T']))
 
     for b in range(B):
         _depthwise_conv1d_kernel[grid](
             x[b], w_flat, b_flat, output[b],
             C, T_in, T_out, K, stride, padding, dilation,
-            BLOCK_T=BLOCK_T,
         )
     return output
 
@@ -136,15 +155,13 @@ def snake_depthwise_conv1d_triton(x: torch.Tensor, alpha: torch.Tensor, weight: 
     w_flat = weight.squeeze(1).contiguous()
     b_flat = bias.contiguous()
 
-    BLOCK_T = 1024
-    grid = (C, triton.cdiv(T_out, BLOCK_T))
+    grid = lambda meta: (C, triton.cdiv(T_out, meta['BLOCK_T']))
 
     for b in range(B):
         _snake_depthwise_conv1d_kernel[grid](
             x[b], alpha_flat,
             w_flat, b_flat, output[b],
             C, T_in, T_out, K, stride, padding, dilation,
-            BLOCK_T=BLOCK_T,
         )
     return output
 
