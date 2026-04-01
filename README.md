@@ -1,6 +1,6 @@
 # Fast-SNAC
 
-Fast inference engine for [SNAC](https://github.com/hubertsiuzdak/snac), a hierarchical neural audio codec. Accelerates SNAC decode up to **2.71x** end-to-end on NVIDIA GPUs through Triton kernels + torch.compile — with no changes to model weights.
+Fast inference engine for [SNAC](https://github.com/hubertsiuzdak/snac), a hierarchical neural audio codec. Accelerates SNAC decode up to **2.90x** end-to-end on NVIDIA GPUs through Triton kernels + torch.compile — with no changes to model weights.
 
 ## Benchmark
 
@@ -10,11 +10,11 @@ NVIDIA H100 PCIe | `hubertsiuzdak/snac_24khz` | 100s audio @ 24kHz
 
 | Method | Latency | Speedup |
 |--------|:-------:|:-------:|
-| PyTorch FP32 | 70.98 ms | 1.00x |
+| PyTorch FP32 | 71.40 ms | 1.00x |
 | + torch.compile | 54.67 ms | **1.30x** |
-| FP16 + Triton kernels | 33.36 ms | **2.13x** |
-| FP16 + Triton + compile | 26.94 ms | **2.63x** |
-| **FP16 + Triton + compile + graph** | **26.16 ms** | **2.71x** |
+| FP16 + Triton kernels | 33.36 ms | **2.14x** |
+| FP16 + Triton + compile | 25.39 ms | **2.81x** |
+| **FP16 + Triton + compile + graph** | **24.58 ms** | **2.90x** |
 
 ### Snake Kernel — FP32
 
