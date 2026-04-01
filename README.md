@@ -24,17 +24,6 @@ NVIDIA H100 PCIe | `hubertsiuzdak/snac_24khz` | 100s audio @ 24kHz
 | + torch.compile | 25.41 ms | **2.81x** | 3,935x |
 | **+ CUDA graph** | **24.78 ms** | **2.88x** | **4,035x** |
 
-## Optimizations
-
-- **Triton Snake kernel** — `fast_sinf` + `fast_dividef` CUDA intrinsics, autotuned BLOCK_T/warps
-- **Fused Snake + Depthwise Conv1d** — single Triton kernel, eliminates intermediate tensor
-- **Batch-in-grid** — batch dimension in Triton grid, single kernel launch (no Python loop)
-- **torch.compile** — Inductor epilogue fusion for elementwise ops (residual add, noise)
-- **torch.library.custom_op** — graph-break-free Triton integration with torch.compile
-- **Weight norm removal** — strips both old and new parametrizations API at load time
-- **NoiseBlock caching** — static noise tensor, enables CUDA graph capture
-- **CUDA graph** — zero CPU overhead kernel replay
-
 ## Quick Start
 
 ```bash
